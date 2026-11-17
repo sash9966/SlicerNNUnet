@@ -1,3 +1,10 @@
 /.idea/
 *__pycache__*
 /SlicerNNUnet/Testing/Data/
+*.py[cod]
+.pytest_cache/
+*.pth
+*.safetensors
+*.nii
+*.nii.gz
+*.nrrd

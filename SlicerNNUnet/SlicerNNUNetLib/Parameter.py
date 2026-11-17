@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, asdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, List, Tuple, Optional, Dict
+from typing import Annotated, List, Tuple, Optional, Dict, Union
 
 import qt
 from slicer.parameterNodeWrapper import parameterPack, Choice, WithinRange
@@ -70,7 +70,6 @@ class Parameter:
         return self.asJSon(indent=4)
 
     def asArgList(self, inDir: Path, outDir: Path) -> List:
-        import torch
         import sys
 
         isValid, reason = self.isValid()
@@ -111,16 +110,14 @@ class Parameter:
         import torch
         if self.device == "cuda" and not torch.cuda.is_available():
             return False
-        if self.device == "mps" and not torch.backends.mps.is_available():
+        if self.device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
             return False
         return True
 
     def _getDevice(self):
         """
-        Get compatible nnUNet device for current torch and hardware install
+        Keep the explicitly selected device. Runtime failures must not change inference settings.
         """
-        if not self.isSelectedDeviceAvailable():
-            return "cpu"
         return self.device
 
     def toSettings(self, settings: Optional[qt.QSettings] = None, key: str = "") -> None:
@@ -162,51 +159,82 @@ class Parameter:
         return self.checkPointName or "checkpoint_final.pth"
 
     def isValid(self) -> Tuple[bool, str]:
-        """
-        Checks if the current configuration is valid.
-        Returns True and empty string if that's the case.
-        False and reason for failure otherwise.
-        """
-        exp_struct_msg = (
-            "Your model weight folder path should look like the following :\n"
-            "Dataset<dataset_id>/<trainer_name>__<plan_name>__<conf_name>\n\n"
-            "It should also contain a dataset.json file and fold_<i_fold> folders with model weights.\n\n"
-            f"Provided model dir :\n{self.modelPath}"
-        )
+        """Validate local metadata and every explicitly selected fold/checkpoint, without loading weights."""
+        try:
+            if not self._isDatasetPathValid():
+                return False, ("dataset.json is missing. Select the existing nnU-Net model run folder "
+                               "containing dataset.json, plans.json and fold_<number> or fold_all. "
+                               f"Provided model directory: {self.modelPath}")
+            self._readDatasetMetadata()
+            self._configurationNameParts
+            if not self._isDatasetNameValid():
+                return False, f"Invalid Dataset folder name: {self._datasetName}. Preserve the exported Dataset folder."
+            self._foldsAsList()
+            checkpoint = self._getCheckpointName()
+            if (Path(checkpoint).name != checkpoint or "/" in checkpoint or "\\" in checkpoint
+                    or Path(checkpoint).suffix not in (".pth", ".safetensors")):
+                return False, "Checkpoint must be a filename ending in .pth or .safetensors inside each selected fold."
+            missingFolds = self._getMissingFolds()
+            if missingFolds:
+                return False, f"Selected folds are missing: {missingFolds}. No other fold will be substituted."
+            invalidWeights = self._getFoldsWithInvalidWeights()
+            if invalidWeights:
+                return False, f"Selected checkpoint {checkpoint} is missing in folds {invalidWeights}. Select the actual filename."
+            if not 0 < self.stepSize <= 1:
+                return False, "Sliding-window step size must be greater than 0 and at most 1."
+            return True, ""
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            return False, str(error)
 
-        if not self._isDatasetPathValid():
-            return False, f"dataset.json file is missing.\n{exp_struct_msg}"
+    def _readDatasetMetadata(self) -> Dict:
+        path = self._datasetFilePath
+        if path is None:
+            raise ValueError("dataset.json is missing. Select a specific model run folder.")
+        dataset = self._readMetadata(path)
+        channels = dataset.get("channel_names")
+        if isinstance(channels, dict):
+            if set(channels) != {str(index) for index in range(len(channels))}:
+                raise ValueError("dataset.json channel_names must use consecutive channel IDs starting at 0.")
+            channelValues = list(channels.values())
+        elif isinstance(channels, list):
+            channelValues = channels
+        else:
+            raise ValueError("dataset.json is missing channel_names. Restore the original model metadata.")
+        if not channelValues or any(not isinstance(name, str) or not name for name in channelValues):
+            raise ValueError("dataset.json channel_names must contain nonempty modality names.")
+        labels = dataset.get("labels")
+        if not isinstance(labels, dict) or not labels:
+            raise ValueError("dataset.json is missing labels. Restore the original model metadata.")
+        if labels.get("background") != 0:
+            raise ValueError("dataset.json labels must define background as 0.")
+        for name, value in labels.items():
+            values = value if isinstance(value, list) else [value]
+            if (not isinstance(name, str) or not name or not values
+                    or any(type(label) is not int or label < 0 for label in values)):
+                raise ValueError("dataset.json labels must contain nonnegative integer label IDs or regions.")
+        regions = [value for name, value in labels.items() if name not in ("background", "ignore")]
+        if any(isinstance(value, list) for value in regions):
+            order = dataset.get("regions_class_order")
+            if (not isinstance(order, list) or len(order) != len(regions)
+                    or any(type(label) is not int or label <= 0 for label in order)):
+                raise ValueError("Region-based labels require the original regions_class_order in dataset.json.")
+        ending = dataset.get("file_ending", ".nii.gz")
+        if not isinstance(ending, str) or not ending.startswith(".") or "/" in ending or "\\" in ending:
+            raise ValueError("dataset.json file_ending must be an image file suffix.")
+        return dataset
 
-        # Check input configuration folds matches the input model folder
-        missing_folds = self._getMissingFolds()
-        if missing_folds:
-            return False, f"Model folder is missing the following folds : {missing_folds}.\n{exp_struct_msg}"
-
-        # Check folds with invalid weights
-        folds_with_invalid_weights = self._getFoldsWithInvalidWeights()
-        if folds_with_invalid_weights:
-            return (
-                False,
-                f"Following model folds don't contain {self._getCheckpointName()} weights : "
-                f"{folds_with_invalid_weights}.\n{exp_struct_msg}"
-            )
-
-        # Check configuration folder name is valid
-
-        if not len(self._configurationNameParts) == 3:
-            return (
-                False,
-                f"Invalid nnUNet configuration folder : {self._configurationFolder.name}\n{exp_struct_msg}"
-            )
-
-        # Check dataset folder name is valid
-        if not self._isDatasetNameValid():
-            return (
-                False,
-                f"Invalid Dataset folder name : {self._datasetName}\n{exp_struct_msg}"
-            )
-
-        return True, ""
+    @staticmethod
+    def _readMetadata(path: Path) -> Dict:
+        if not path.is_file():
+            raise ValueError(f"{path.name} is missing. Restore the original model metadata in {path.parent}.")
+        try:
+            with path.open(encoding="utf-8") as stream:
+                metadata = json.load(stream)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Cannot read {path.name}: {error}") from error
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{path.name} must contain a JSON object.")
+        return metadata
 
     @staticmethod
     def _isConvertibleToInt(dataSetFolderName):
@@ -220,75 +248,85 @@ class Parameter:
         return self._datasetName.startswith("Dataset") or self._isConvertibleToInt(self._datasetName)
 
     def readSegmentIdsAndLabelsFromDatasetFile(self) -> Optional[List[Tuple[str, str]]]:
-        """
-        Load SegmentIds / labels pairs from the dataset file.
-        """
-        if not self._isDatasetPathValid():
+        """Return exported label identities, excluding background and the training-only ignore label."""
+        try:
+            dataset = self._readDatasetMetadata()
+        except (OSError, ValueError, TypeError):
             return None
-
-        with open(self._datasetFilePath, "r") as f:
-            dataset_dict = json.loads(f.read())
-            labels = dataset_dict.get("labels")
-            return [(f"Segment_{v}", k) for k, v in labels.items()]
+        labels = [(name, value) for name, value in dataset["labels"].items()
+                  if name not in ("background", "ignore")]
+        if any(isinstance(value, list) for _, value in labels):
+            labels = [(name, value) for (name, _), value in zip(labels, dataset["regions_class_order"])]
+        return [(f"Segment_{value}", name) for name, value in labels]
 
     def readFileEndingFromDatasetFile(self) -> str:
-        default = ".nii.gz"
-        if not self._isDatasetPathValid():
-            return default
-
-        with open(self._datasetFilePath, "r") as f:
-            dataset_dict = json.loads(f.read())
-            return dataset_dict.get("file_ending", default)
+        try:
+            return self._readDatasetMetadata().get("file_ending", ".nii.gz")
+        except (OSError, ValueError, TypeError):
+            return ".nii.gz"
 
     def readChannelNamesFromFile(self) -> List[str]:
-        if not self._isDatasetPathValid():
+        try:
+            channels = self._readDatasetMetadata()["channel_names"]
+        except (OSError, ValueError, TypeError):
             return []
-
-        with open(self._datasetFilePath, "r") as f:
-            dataset_dict = json.loads(f.read())
-            channel_names = dataset_dict.get("channel_names", {})
-            if isinstance(channel_names, dict):
-                # Sort keys numerically when possible to keep channel order stable
-                return [channel_names[k] for k in
-                        sorted(channel_names, key=lambda x: int(x) if str(x).isdigit() else str(x))]
-            return channel_names if isinstance(channel_names, list) else []
+        return [channels[str(index)] for index in range(len(channels))] if isinstance(channels, dict) else channels
 
     @property
     def _datasetFilePath(self) -> Optional[Path]:
-        path = self._getFirstFolderWithDatasetFile(self.modelPath)
-        if path is not None:
-            return path
-
-        isProvidedPathFoldDir = list(self.modelPath.glob(self._getCheckpointName()))
-        if isProvidedPathFoldDir:
-            return self._getFirstFolderWithDatasetFile(self.modelPath.parent)
-        return None
+        path = Path(self.modelPath)
+        if path.name.startswith("fold_") and path.parent.joinpath("dataset.json").is_file():
+            return path.parent / "dataset.json"
+        return self._getFirstFolderWithDatasetFile(path)
 
     @staticmethod
     def _getFirstFolderWithDatasetFile(path: Path, searchDepth: int = 3) -> Optional[Path]:
+        """Keep unambiguous parent-folder convenience without selecting an arbitrary model."""
+        direct = path / "dataset.json"
+        if direct.is_file():
+            return direct
+        candidates = []
         pattern = "dataset.json"
-        for _ in range(searchDepth):
-            dataset_path = next(path.glob(pattern), None)
-            if dataset_path:
-                return dataset_path
+        for _ in range(1, searchDepth):
             pattern = f"*/{pattern}"
-        return None
+            candidates.extend(candidate for candidate in path.glob(pattern) if candidate.is_file())
+        if len(candidates) > 1:
+            raise ValueError("Multiple model directories contain dataset.json. Select the specific trainer/plans/configuration folder.")
+        return candidates[0] if candidates else None
 
-    def _foldsAsList(self) -> List[int]:
-        return [int(f) for f in self.folds.strip().split(",")] if self.folds else [0]
+    def _foldsAsList(self) -> List[Union[int, str]]:
+        value = self.folds.strip()
+        if not value:
+            return [0]
+        if value == "all":
+            return ["all"]
+        parts = [part.strip() for part in value.split(",")]
+        if any(not part or not part.isascii() or not part.isdigit() for part in parts):
+            raise ValueError("Folds must be a numbered fold, comma-separated numbered folds, or exactly all. Do not mix all with numbered folds.")
+        folds = [int(part) for part in parts]
+        if len(set(folds)) != len(folds):
+            raise ValueError("Each numbered fold must be selected only once.")
+        return folds
 
-    def _getFoldPaths(self) -> List[Tuple[int, Path]]:
-        return [(fold, self._configurationFolder.joinpath(f"fold_{fold}")) for fold in self._foldsAsList()]
+    def _getFoldPaths(self) -> List[Tuple[Union[int, str], Path]]:
+        return [(fold, self._configurationFolder / f"fold_{fold}") for fold in self._foldsAsList()]
 
-    def _getMissingFolds(self) -> List[int]:
-        return [fold for fold, path in self._getFoldPaths() if not path.exists()]
+    def _getMissingFolds(self) -> List[Union[int, str]]:
+        return [fold for fold, path in self._getFoldPaths() if not path.is_dir()]
 
-    def _getFoldsWithInvalidWeights(self) -> List[int]:
-        return [fold for fold, path in self._getFoldPaths() if not path.joinpath(self._getCheckpointName()).exists()]
+    def _getFoldsWithInvalidWeights(self) -> List[Union[int, str]]:
+        return [fold for fold, path in self._getFoldPaths() if not (path / self._getCheckpointName()).is_file()]
+
+    @property
+    def configurationFolder(self) -> Path:
+        return self._configurationFolder
 
     @property
     def _configurationFolder(self) -> Path:
-        return self._datasetFilePath.parent
+        path = self._datasetFilePath
+        if path is None:
+            raise ValueError("dataset.json is missing. Select a specific model run folder.")
+        return path.parent
 
     @property
     def _datasetFolder(self) -> Path:
@@ -304,7 +342,39 @@ class Parameter:
 
     @property
     def _configurationNameParts(self) -> List[str]:
-        return self._configurationFolder.name.split("__")
+        """Recover complete identifiers from exact saved plans/configuration suffixes, never split on __."""
+        folder = self._configurationFolder
+        plans = self._readMetadata(folder / "plans.json")
+        plansName = plans.get("plans_name")
+        configurations = plans.get("configurations")
+        if not isinstance(plansName, str) or not plansName:
+            raise ValueError("plans.json is missing plans_name. Restore the original model metadata.")
+        if not isinstance(configurations, dict) or not configurations:
+            raise ValueError("plans.json is missing configurations. Restore the original model metadata.")
+        if plans.get("dataset_name") != self._datasetName:
+            raise ValueError("plans.json dataset_name does not match the enclosing Dataset folder. Preserve the original model layout.")
+        candidates = []
+        for configuration in configurations:
+            suffix = f"__{plansName}__{configuration}"
+            if folder.name.endswith(suffix):
+                trainer = folder.name[:-len(suffix)]
+                if trainer:
+                    candidates.append([trainer, plansName, configuration])
+        if len(candidates) != 1:
+            raise ValueError("Model folder does not uniquely match plans.json plans_name and configurations. Select the unchanged exported run folder.")
+        return candidates[0]
+
+    @property
+    def trainerName(self) -> str:
+        return self._configurationNameParts[0]
+
+    @property
+    def plansName(self) -> str:
+        return self._configurationNameParts[1]
+
+    @property
+    def configurationName(self) -> str:
+        return self._configurationNameParts[2]
 
     def _isDatasetPathValid(self) -> bool:
         return self._datasetFilePath is not None

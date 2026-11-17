@@ -50,7 +50,7 @@ class SlicerNNUNetWidget(ScriptedLoadableModuleWidget):
         import importlib
 
         packageName = "SlicerNNUNetLib"
-        submoduleNames = ["Signal", "Parameter", "InstallLogic", "SegmentationLogic", "Widget"]
+        submoduleNames = ["Signal", "Parameter", "InstallLogic", "ModelRegistry", "SegmentationLogic", "Widget"]
         package = importlib.import_module(packageName)
         for submoduleName in submoduleNames:
             fullName = f"{packageName}.{submoduleName}"

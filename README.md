@@ -7,6 +7,8 @@
 * [Introduction](#introduction)
 * [Acknowledgments](#acknowledgments)
 * [Using the extension](#using-the-extension)
+* [Fine-tuned nnFoundation models](#fine-tuned-nnfoundation-models)
+* [Validation](#validation)
 * [Changelog](#changelog)
 * [Expected Weight Folder Structure](#expected-weight-folder-structure)
 * [Contributing](#contributing)
@@ -41,7 +43,13 @@ method for deep learning-based biomedical image segmentation. Nature methods, 18
 
 ## Using the extension
 
-This extension can be installed directly using Slicer's extension manager.
+The original extension can be installed using Slicer's extension manager. This local
+development fork retains the original extension/module names and replaces it in a
+Slicer installation. Disable or uninstall the original **SlicerNNUnet** first;
+do not load both copies. Build/package this checkout with the Slicer extension
+build tools, or for local development add this checkout's `SlicerNNUnet` directory
+to **Edit → Application Settings → Modules → Additional module paths**, then restart.
+No fork, release or extension-catalogue submission is published by this checkout.
 
 Once installed, navigate to `Segmentation>nnUNet` in the modules drop down menu or search directly
 for `nnUnet`.
@@ -54,8 +62,11 @@ This area will display the current version of nnUNet in 3D Slicer's environment.
 If nnUNet is not yet installed, the current version will display None.
 It can be installed by clicking on the install Button.
 
-After the install is complete, the current version should display the latest nnUNet version or the version as set in
-the "To install" field.
+Choose the model-compatible version in the "To install" field before explicitly
+clicking Install. The installer retains upstream's protections for Slicer-managed
+SimpleITK, requests and PyTorch. **Apply never installs, upgrades or replaces a
+runtime.** An installed version number alone does not prove compatibility with a
+particular trainer or architecture.
 
 <img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/3.png"/>
 
@@ -87,6 +98,9 @@ The logs console will display all the information regarding running the input mo
 
 Once the model has finished running, the segmentation will be loaded into 3D Slicer with its associated labels.
 It can then be viewed and edited in the `Segment Editor` module.
+Use **Save** to save the edited segmentation as `.seg.nrrd`, or save the scene with
+the input volume and segmentation. Stop cancels the background process. Failed
+or cancelled runs do not import output or remove existing scan/segmentation nodes.
 
 <img src="https://github.com/KitwareMedical/SlicerNNUnet/raw/main/Screenshots/1.png"/>
 
@@ -94,12 +108,33 @@ It can then be viewed and edited in the `Segment Editor` module.
 
 To properly run the nnUNet prediction, the nnUNet weight folder structure should be preserved.
 
-nnUNet structure should look like the following : 
-* <dataset_id> : The dataset id should be either a string beginning by Dataset or an integer
-  * <trainer_name>__<plan_name>__<config_name> : default configuration folder name is `nnUNetTrainer__nnUNetPlans__3d_fullres`
-    * fold_<> : Fold folder from 0 to n containing the training weights
-      * <weight_name> : By default the weight name is `checkpoint_final.pth` it can also be modified using the `Parameter` class
-    * dataset.json : Configuration file containing dataset labels
+```text
+DatasetNNN_Name/
+  ExistingTrainer__ExistingPlans__3d_fullres/
+    plans.json
+    dataset.json
+    dataset_fingerprint.json
+    fold_0/checkpoint_final.pth
+    fold_1/checkpoint_final.pth
+    fold_2/checkpoint_final.pth
+    fold_3/checkpoint_final.pth
+    fold_4/checkpoint_final.pth
+    fold_all/checkpoint_final.pth
+```
+
+Include only the folds/files actually present. Select the existing trainer/plans/
+configuration folder. An unambiguous parent or a fold path is also accepted; a
+parent containing multiple models requires a specific model selection. The
+extension reads the exact plans identifier/configuration from `plans.json` and
+matches that suffix to preserve complete trainer/plans names containing `__`.
+Do not flatten or rename folders, edit metadata or retag checkpoints.
+
+**Folds:** `0` selects `fold_0`; `0,1,2,3,4` explicitly ensembles those folds;
+`all` selects only native `fold_all`. Empty retains upstream's `0` default.
+Mixed, duplicate and invalid selections are rejected. Missing folds/checkpoints
+fail without selecting another model. Set the actual checkpoint filename under
+Run Settings; empty means `checkpoint_final.pth`. `.pth` and `.safetensors` names
+are accepted, provided the installed native nnU-Net supports that format.
 
 If this structure is not preserved, the inference will raise an error.
 
@@ -107,6 +142,94 @@ The `Parameter` class provides an `isValid` method to check if the provided mode
 
 Please read [the official nnUNet documentation](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how_to_use_nnunet.md#3d-u-net-cascade) 
 for more information.
+
+## Fine-tuned nnFoundation models
+
+The workflow is **Load scan → select registered model → Apply → review/edit
+segmentation**. Manual model paths and the existing input-channel/advanced controls
+remain available. There is one native `nnUNetv2_predict` route for standard models,
+CNN and ViT; no separate architecture predictor is installed. On macOS the existing
+sequential preprocessing/export arguments are retained.
+
+1. Obtain the **fine-tuned segmentation export** from its owner. Public MAE
+   pretraining checkpoints are not substitutes. This repository contains no weights
+   or download URLs. Keep weights outside the installed extension, for example in
+   a persistent `nnUNetWeights` directory.
+2. Select **CNN** or **ViT** in Registered model. In Run Settings choose that model's
+   unchanged folder, explicit folds/checkpoint, device, step size and TTA setting.
+   Click **Save/Update**. These two entries initially have no path.
+3. Select the scan and any additional channels in the `dataset.json` order. Apply
+   starts inference only. Selecting/saving an entry never downloads or installs.
+4. Edit results in Segment Editor and save them. CNN and ViT preferences are saved
+   independently in Slicer's QSettings and restored after restarting Slicer. Advanced
+   changes are temporary until Save/Update is clicked for that registered entry.
+5. After moving weights, update the selected entry's path in Run Settings and click
+   Save/Update. The export itself is never modified.
+
+Metadata and historical reference settings for the available D091 CT exports were
+checked locally. These are **configuration examples, not a Slicer inference
+certification**:
+
+| Setting | CNN | ViT |
+|---|---|---|
+| Dataset folder | `Dataset091_ImageCHDPseudoCombinedV2` | Same |
+| Trainer | `PretrainedTrainer_CT_Adam150` | `PretrainedTrainer_CT_ViT_Adam150` |
+| Plans | `nnFoundation_cnn_CT_Adam150` | `nnFoundation_vit_CT_Adam150` |
+| Configuration | `3d_fullres` | `3d_fullres` |
+| Saved architecture identifier | `ResEncL` | `PrimusX` |
+| Folds / checkpoint | `all` / `checkpoint_final.pth` | Same |
+| Step size / disable TTA | `0.5` / checked | Same |
+| Channels / external postprocessing | One CT / none | Same |
+
+Both exports retain their saved Z-score normalization, 1-mm plans spacing and
+192³ patch. Their output metadata defines 1 LV-BP, 2 RV-BP, 3 LA, 4 RA, 5 Myo,
+6 Aorta and 7 Pulmonary. The extension derives names/identities from each export's
+metadata and uses native image geometry; it does not impose this label set on
+other models.
+
+**Runtime requirement for these legacy exports:** their original trainer source
+imports the older `nnunetv2.training.nnUNetTrainer.pretraining` hierarchy. A read-only
+import probe in local Slicer 5.12.3 (macOS arm64, nnunetv2 2.8.1, Torch 2.2.2)
+fails because that hierarchy is absent. Their historical reference used nnUNet
+commit `202f6baa0adc2ef5f7b615df19cc4da970412cc0`, Torch 2.6.0,
+dynamic-network-architectures 0.4.4 and the established original inference
+implementation, which supplied `input_patch_size` to the legacy builder.
+This is an unresolved distribution/runtime requirement for these exports. No
+package change or extra trainer distribution scheme was introduced here.
+
+Current official nnU-Net provides native pretrained CNN and Primus trainers;
+installing all of nnssl is not a general prerequisite. Use the exact compatible
+implementation for the selected export, then verify native restoration and
+prediction before claiming support. Do not blindly install latest or replace
+the legacy implementation with a differently named current trainer. There is
+currently **no tested Slicer runtime installation recipe for these two exports**.
+The target colleague environment and a compatible runtime must be confirmed before
+deployment. [nnFoundation](https://github.com/MIC-DKFZ/nnssl),
+[official adaptation guide](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/finetuning_from_nnssl_checkpoints.md),
+[inference guide](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how-to/run-inference.md).
+
+Troubleshooting:
+
+- **Missing/ambiguous metadata:** select one unchanged model run containing
+  `plans.json`, `dataset.json` and the requested folds. Restore original missing
+  files rather than synthesizing replacements.
+- **Trainer/architecture import error:** read the subprocess traceback and use
+  the export's compatible original runtime. Registration validates configuration,
+  not tensor restoration. Preserve checkpoint bytes and source provenance.
+- **Wrong channels:** provide every input in metadata order, already aligned to
+  the first input. The extension does not reorder or register images.
+- **Device or memory failure:** the log retains the subprocess diagnostic. Free
+  memory or explicitly select suitable hardware. The extension does not change
+  device, patch size, TTA or plans to fit. No GPU memory requirement is certified
+  for these exports in Slicer.
+- **No result after failure/Stop:** this is intentional; only a normal zero exit
+  with the exact current-run output can be imported. Existing scene nodes remain.
+
+## Validation
+
+See [VALIDATION.md](VALIDATION.md) for tested behavior, unrun real-model acceptance
+checks and reproducible commands. Fast tests require only Python; Slicer geometry/
+widget checks use synthetic data. Neither substitutes for CNN/ViT reference parity.
 
 ## Contributing
 

@@ -1,4 +1,5 @@
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Protocol, List, Optional, Callable, Union
@@ -69,8 +70,8 @@ class SegmentationLogic:
     At the start of the nnUNet detection, a temporary folder is created with the selected input volume.
     The nnUNet detection QProcess is called with user parameters.
 
-    Once the QProcess processing is done (either successfully or not), the Segmentation Logic triggers
-    the inferenceFinished call.
+    After a normal zero process exit, the Segmentation Logic triggers inferenceFinished.
+    Failures are reported through errorOccurred and cannot be imported.
 
     During execution, the standard output is returned using the progressInfo signal. If any error occurs, the
     errorOccurred sigal is used.
@@ -105,19 +106,25 @@ class SegmentationLogic:
         self.progressInfo = Signal("str")
 
         self.inferenceProcess = process or Process(qt.QProcess.MergedChannels)
-        self.inferenceProcess.finished.connect(self.inferenceFinished)
-        self.inferenceProcess.errorOccurred.connect(self.errorOccurred)
+        self.inferenceProcess.finished.connect(self._onProcessFinished)
+        self.inferenceProcess.errorOccurred.connect(self._onProcessError)
         self.inferenceProcess.readInfo.connect(self.progressInfo)
 
         self._nnUNet_predict_path = None
         self._nnUNetParam: Optional[Parameter] = None
         self._tmpDir = qt.QTemporaryDir()
+        self._running = False
+        self._completedSuccessfully = False
+        self._cancelled = False
+        self._referenceVolume = None
+        self._runGeneration = 0
 
     def __del__(self):
         self.stopSegmentation()
 
     def setParameter(self, nnUnetConf: Parameter):
-        self._nnUNetParam = nnUnetConf
+        # Keep a run independent of edits to the widget's parameter node.
+        self._nnUNetParam = Parameter(**nnUnetConf.asDict())
 
     def startSegmentation(
             self,
@@ -129,38 +136,80 @@ class SegmentationLogic:
         """
         if not isinstance(volumeNodes, list):
             volumeNodes = [volumeNodes]
+        self.stopSegmentation()
+        self.waitForSegmentationFinished()
+        generation = self._runGeneration
+        self._cancelled = False
+        self._completedSuccessfully = False
         # Check the nnUNet parameters are correct
         try:
             self._getNNUNetParamArgsOrRaise()
-        except RuntimeError as e:
-            self.errorOccurred(e)
+            expected = len(self._nnUNetParam.readChannelNamesFromFile())
+            if len(volumeNodes) != expected or any(node is None for node in volumeNodes):
+                raise RuntimeError(f"Model requires {expected} input channel(s), in dataset.json order; "
+                                   f"received {len(volumeNodes)}. Select every input volume.")
+            if not self._nnUNetParam.isSelectedDeviceAvailable():
+                raise RuntimeError(f"Selected device '{self._nnUNetParam.device}' is unavailable. "
+                                   "Check the PyTorch build and device driver, or explicitly select another device.")
+        except (RuntimeError, ImportError) as e:
+            self.errorOccurred(f"Cannot start inference: {e}. Check the selected model and its compatible PyTorch/nnU-Net runtime.")
             return
 
         # Prepare the inference directory
-        if not self._prepareInferenceDir(volumeNodes):
-            self.errorOccurred(f"Failed to export volume node to {self.nnUNetInDir}")
+        try:
+            prepared = self._prepareInferenceDir(volumeNodes, generation)
+            if self._cancelled or generation != self._runGeneration:
+                return
+            if not prepared:
+                raise RuntimeError(f"Failed to export input volumes to {self.nnUNetInDir}")
+        except Exception as e:
+            self.errorOccurred(str(e))
             return
 
         # Launch the nnUNet processing
-        self._startInferenceProcess()
+        self._startInferenceProcess(generation)
 
     def stopSegmentation(self):
+        self._runGeneration += 1
+        self._cancelled = True
+        self._completedSuccessfully = False
+        self._running = False
         self.inferenceProcess.stop()
+
+    def _onProcessError(self, message):
+        self._running = False
+        self._completedSuccessfully = False
+        self.errorOccurred(str(message))
+
+    def _onProcessFinished(self, *_):
+        # Process.finished is emitted only after a normal zero exit.
+        if not self._running or self._cancelled:
+            return
+        self._running = False
+        self._completedSuccessfully = True
+        self.inferenceFinished()
 
     def waitForSegmentationFinished(self):
         self.inferenceProcess.waitForFinished()
 
     def loadSegmentation(self) -> "slicer.vtkMRMLSegmentationNode":
+        if not self._completedSuccessfully or self._cancelled:
+            raise RuntimeError("No successful completed inference is available. Failed or cancelled output is not imported.")
+        if not Path(self._outFile).is_file():
+            raise RuntimeError(f"Inference did not produce the expected result: {self._outFile}")
+        segmentationNode = None
         try:
             segmentationNode = slicer.util.loadSegmentation(self._outFile)
+            if segmentationNode is None:
+                raise RuntimeError("Slicer could not read the prediction as an editable segmentation.")
             self._renameSegments(segmentationNode)
+            segmentationNode.SetAndObserveTransformNodeID(self._referenceVolume.GetTransformNodeID())
+            segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(self._referenceVolume)
             return segmentationNode
-        except StopIteration:
-            raise RuntimeError(
-                "Failed to load the segmentation.\n"
-                "Something went wrong during the nnUNet processing.\n"
-                "Please check the logs for potential errors and contact the library maintainers."
-            )
+        except Exception as e:
+            if segmentationNode is not None:
+                slicer.mrmlScene.RemoveNode(segmentationNode)
+            raise RuntimeError(f"Failed to import segmentation: {e}") from e
 
     def _renameSegments(self, segmentationNode: "slicer.vtkMRMLSegmentationNode") -> None:
         """
@@ -189,20 +238,23 @@ class SegmentationLogic:
         scriptDirs = [Path(sysconfig.get_path("scripts"))]
         scriptDirs += [cls._nnUNetPythonDir().joinpath(path) for path in ["Scripts", "bin"]]
         for scriptDir in scriptDirs:
-            predict_paths = list(sorted(scriptDir.glob("nnUNetv2_predict*")))
-            if predict_paths:
-                return predict_paths[0].resolve()
+            # Other nnUNetv2_predict* commands accept different arguments.
+            name = "nnUNetv2_predict.exe" if sys.platform == "win32" else "nnUNetv2_predict"
+            candidate = scriptDir / name
+            if candidate.is_file():
+                return candidate
 
         return None
 
-    def _startInferenceProcess(self):
+    def _startInferenceProcess(self, generation=None):
         """
         Run the nnU-Net V2 inference script
         """
         # Check the nnUNet predict script is correct
         nnUnetPredictPath = self._findUNetPredictPath()
         if not nnUnetPredictPath:
-            self.errorOccurred("Failed to find nnUNet predict path.")
+            self.errorOccurred("Cannot find the nnUNetv2_predict entry point in Slicer's Python runtime. "
+                               "Use nnUNet Install explicitly to install a model-compatible runtime, then restart Slicer.")
             return
 
         # Get the nnUNet parameters as arg list
@@ -226,14 +278,7 @@ class SegmentationLogic:
         os.environ['nnUNet_n_proc_DA'] = str(min(12, cpu_count))
         os.environ['nnUNet_def_n_proc'] = str(min(8, cpu_count))
 
-        device = self._nnUNetParam._getDevice()
-        if device != self._nnUNetParam.device:
-            self.progressInfo(f"Selected device '{self._nnUNetParam.device}' is not available, using '{device}' instead.\n")
-        if device == "mps":
-            # Operators not supported by the MPS backend (Apple GPU) fall back to CPU instead of failing
-            os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
-
-        argListStr = ' '.join(str(a) for a in args)
+        argListStr = shlex.join([str(a) for a in args])
         self.progressInfo(
             "Starting nnUNet with the following parameters:\n"
             f"\n{nnUnetPredictPath} {argListStr}\n\n"
@@ -241,30 +286,47 @@ class SegmentationLogic:
             f"{self._nnUNetParam.debugString()}\n"
         )
         self.progressInfo("nnUNet preprocessing...\n")
-        self.inferenceProcess.start(nnUnetPredictPath, args, qt.QProcess.Unbuffered | qt.QProcess.ReadOnly)
+        # Progress callbacks may process UI events, including Stop/scene close.
+        if self._cancelled or (generation is not None and generation != self._runGeneration):
+            return
+        self._running = True
+        try:
+            self.inferenceProcess.start(str(nnUnetPredictPath), [str(a) for a in args],
+                                        qt.QProcess.Unbuffered | qt.QProcess.ReadOnly)
+        except Exception as e:
+            self._onProcessError(e)
 
     def _getNNUNetParamArgsOrRaise(self):
+        if self._nnUNetParam is None:
+            raise RuntimeError("Select a model before starting inference.")
         return self._nnUNetParam.asArgList(self.nnUNetInDir, self.nnUNetOutDir)
 
     @property
     def _outFile(self) -> str:
-        return next(file for file in self.nnUNetOutDir.rglob(f"*{self._fileEnding}")).as_posix()
+        return (self.nnUNetOutDir / f"volume{self._fileEnding}").as_posix()
 
-    def _prepareInferenceDir(self, volumeNodes) -> bool:
+    def _prepareInferenceDir(self, volumeNodes, generation=None) -> bool:
         if not volumeNodes:
             return False
-        self._tmpDir.remove()
+        # A new run cannot reuse partial output from an earlier invocation.
+        self._tmpDir = qt.QTemporaryDir()
+        if not self._tmpDir.isValid():
+            raise RuntimeError("Cannot create a temporary inference directory. Check available disk space.")
         self.nnUNetOutDir.mkdir(parents=True)
         self.nnUNetInDir.mkdir(parents=True)
+        self._referenceVolume = volumeNodes[0]
 
         # Name of the volume should match expected nnUNet conventions
         self.progressInfo(f"Transferring volume to nnUNet in {self._tmpDir.path()}\n")
         volumePaths = []
         for idx, volumeNode in enumerate(volumeNodes):
+            if self._cancelled or (generation is not None and generation != self._runGeneration):
+                return False
             volumePaths.append(
                 volumePath := self.nnUNetInDir.joinpath(f"volume_{idx:04d}{self._fileEnding}")
             )
-            slicer.util.exportNode(volumeNode, volumePath)
+            if not slicer.util.exportNode(volumeNode, str(volumePath), {}):
+                return False
 
         return all(volumePath.exists() for volumePath in volumePaths)
 
@@ -294,28 +356,63 @@ class Process:
         self.readInfo = Signal("str")
 
         self.process = qt.QProcess()
+        self._cancelled = False
+        self._failed = False
+        self._logTail = ""
         self.process.setProcessChannelMode(channelMode)
-        self.process.finished.connect(self.finished)
+        self.process.finished.connect(self._onFinished)
         self.process.errorOccurred.connect(self._onErrorOccurred)
         self.process.readyRead.connect(self._onReadyRead)
 
     def stop(self):
-        if self.process.state() == self.process.Running:
+        if self.process.state() != self.process.NotRunning:
+            self._cancelled = True
             self.readInfo("Killing process.")
             self.process.kill()
 
     def start(self, program, args, openMode: qt.QIODevice.OpenMode):
         self.stop()
+        self._cancelled = False
+        self._failed = False
+        self._logTail = ""
         self.process.start(program, args, openMode)
 
     def waitForFinished(self, timeOut_ms: Optional[int] = None):
         self.process.waitForFinished(timeOut_ms if timeOut_ms is not None else -1)
 
     def _onReadyRead(self):
-        self._report(self.process.readAll(), self.readInfo)
+        info = bytes(self.process.readAll().data()).decode("utf-8", errors="replace")
+        if info:
+            self._logTail = (self._logTail + info)[-12000:]
+            self.readInfo(info)
 
     def _onErrorOccurred(self, *_):
-        self._report(self.process.readAllStandardError(), self.errorOccurred)
+        self._onReadyRead()
+        if not self._cancelled and not self._failed:
+            self._failed = True
+            self.errorOccurred(f"Could not run nnU-Net: {self.process.errorString()}\n{self._logTail}")
+
+    def _onFinished(self, exitCode, exitStatus=None):
+        # PythonQt may bind QProcess.finished(int) rather than its two-argument overload.
+        if exitStatus is None:
+            exitStatus = self.process.exitStatus()
+        self._onReadyRead()
+        if self._cancelled or self._failed:
+            return
+        if exitCode != 0 or exitStatus != qt.QProcess.NormalExit:
+            self._failed = True
+            diagnostic = self._logTail
+            lower = diagnostic.lower()
+            if "out of memory" in lower or "cannot allocate memory" in lower:
+                hint = "Device or host memory was exhausted. Free memory or choose suitable hardware explicitly. "
+            elif "modulenotfounderror" in lower or "importerror" in lower or "trainer" in lower:
+                hint = "Check that this model's original trainer, architecture and compatible runtime are installed. "
+            else:
+                hint = "Check the model metadata, original trainer/architecture and runtime versions. "
+            self.errorOccurred(f"nnU-Net exited with code {exitCode} (status {exitStatus}). "
+                               f"{hint}No result was imported.\n{diagnostic}")
+            return
+        self.finished()
 
     @staticmethod
     def _report(stream: "qt.QByteArray", outSignal: Callable[[str], None]) -> None:

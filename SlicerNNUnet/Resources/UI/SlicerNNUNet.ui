@@ -68,6 +68,44 @@
     </widget>
    </item>
    <item>
+    <layout class="QFormLayout" name="registeredModelsLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="registeredModelLabel">
+       <property name="text">
+        <string>Model:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="registeredModelComboBox">
+       <property name="toolTip">
+        <string>Restore saved CNN or ViT settings. Selecting a model does not install anything or start inference. Manual keeps the original model-path workflow.</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QPushButton" name="saveModelButton">
+       <property name="text">
+        <string>Save/Update</string>
+       </property>
+       <property name="toolTip">
+        <string>Save the current Run Settings for the selected CNN or ViT model. After moving weights, change Model path in Run Settings and click Save/Update again.</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0" colspan="2">
+      <widget class="QLabel" name="modelSelectionStatusLabel">
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+       <property name="text">
+        <string>Choose a model folder in nnUNet Run Settings.</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
     <widget class="ctkCollapsibleButton" name="nnUNetSettingsCollapsibleButton">
      <property name="text">
       <string>nnUNet Run Settings</string>
@@ -219,13 +257,13 @@ processes (NPS):</string>
       <item row="4" column="1">
        <widget class="QLineEdit" name="foldsLineEdit">
         <property name="toolTip">
-         <string>Folds folder to use during inference. More folds will increase inference time. If left empty, will use only fold_0 .</string>
+         <string>Use 0 for fold_0, comma-separated numbers for an ensemble, or all for native fold_all. Do not mix all with numbered folds. Empty uses fold_0.</string>
         </property>
         <property name="text">
          <string/>
         </property>
         <property name="placeholderText">
-         <string>0,1,2,3,4</string>
+         <string>0 or 0,1,2,3,4 or all</string>
         </property>
         <property name="SlicerParameterName" stdset="0">
          <string>parameter.folds</string>
@@ -235,7 +273,7 @@ processes (NPS):</string>
       <item row="3" column="1">
        <widget class="QLineEdit" name="checkPointNameLineEdit">
         <property name="toolTip">
-         <string>Name of the model checkpoint file. Leave empty to use default.</string>
+         <string>Exact checkpoint filename present in each selected fold, including its original extension. Empty uses checkpoint_final.pth.</string>
         </property>
         <property name="text">
          <string/>

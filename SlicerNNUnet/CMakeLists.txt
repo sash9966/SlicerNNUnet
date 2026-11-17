@@ -6,16 +6,20 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
   ${MODULE_NAME}Lib/__init__.py
   ${MODULE_NAME}Lib/InstallLogic.py
+  ${MODULE_NAME}Lib/ModelRegistry.py
   ${MODULE_NAME}Lib/Parameter.py
   ${MODULE_NAME}Lib/SegmentationLogic.py
   ${MODULE_NAME}Lib/Signal.py
   ${MODULE_NAME}Lib/Widget.py
   Testing/__init__.py
   Testing/InstallLogicTestCase.py
+  Testing/ModelParityTestCase.py
+  Testing/ProcessTestCase.py
   Testing/IntegrationTestCase.py
   Testing/SegmentationLogicTestCase.py
   Testing/Utils.py
   Testing/WidgetTestCase.py
+  Testing/run_configuration_checks.py
   )
 
 set(MODULE_PYTHON_RESOURCES

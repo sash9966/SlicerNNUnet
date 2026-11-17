@@ -9,7 +9,7 @@ from .Utils import NNUNetTestCase, load_test_CT_volume, _dataFolderPath
 @pytest.mark.slow
 class IntegrationTestCase(NNUNetTestCase):
     def test_widget_can_run_nn_unet_segmentation_logic(self):
-        if not Parameter(modelPath=_dataFolderPath()).isValid():
+        if not Parameter(modelPath=_dataFolderPath()).isValid()[0]:
             pytest.skip(f"Skipped : no nnUNet model available in {_dataFolderPath()}")
 
         # Initialize widget
