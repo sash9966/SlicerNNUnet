@@ -1,6 +1,16 @@
 import slicer
+from pathlib import Path
 from slicer.ScriptedLoadableModule import *
 from slicer.i18n import tr as _, translate
+
+import SlicerNNUNetLib
+
+if Path(SlicerNNUNetLib.__file__).resolve().parent != Path(__file__).resolve().parent / "SlicerNNUNetLib":
+    raise ImportError(
+        "SlicerNNUNetLib was loaded from another extension installation. "
+        "Disable or uninstall the original nnUNet extension, remove duplicate module paths, "
+        "and restart Slicer before loading this fork."
+    )
 
 from SlicerNNUNetLib import Widget
 

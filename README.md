@@ -166,9 +166,8 @@ sequential preprocessing/export arguments are retained.
 5. After moving weights, update the selected entry's path in Run Settings and click
    Save/Update. The export itself is never modified.
 
-Metadata and historical reference settings for the available D091 CT exports were
-checked locally. These are **configuration examples, not a Slicer inference
-certification**:
+These D091 CT configurations were used in the single-scan local CPU workflow
+validation:
 
 | Setting | CNN | ViT |
 |---|---|---|
@@ -187,24 +186,20 @@ Both exports retain their saved Z-score normalization, 1-mm plans spacing and
 metadata and uses native image geometry; it does not impose this label set on
 other models.
 
-**Runtime requirement for these legacy exports:** their original trainer source
-imports the older `nnunetv2.training.nnUNetTrainer.pretraining` hierarchy. A read-only
-import probe in local Slicer 5.12.3 (macOS arm64, nnunetv2 2.8.1, Torch 2.2.2)
-fails because that hierarchy is absent. Their historical reference used nnUNet
-commit `202f6baa0adc2ef5f7b615df19cc4da970412cc0`, Torch 2.6.0,
-dynamic-network-architectures 0.4.4 and the established original inference
-implementation, which supplied `input_patch_size` to the legacy builder.
-This is an unresolved distribution/runtime requirement for these exports. No
-package change or extra trainer distribution scheme was introduced here.
+**Local macOS runtime:** both unchanged checkpoints pass strict native restoration
+and complete Apply, editing and save/reload in Slicer 5.12.3 using pinned official
+nnU-Net and batchgenerators source, with existing Slicer binary dependencies.
+Original trainer files are
+discovered through native `nnUNet_extTrainer`; no trainer aliases, checkpoint
+conversion or nnssl installation are needed. The default installed nnunetv2
+2.8.1 lacks that support, and the tested 2.9.0 source is not yet a PyPI release.
+Follow the [tested macOS source setup](NATIVE_MACOS.md) and consult the
+[validation results](VALIDATION.md) before deployment. Installed packages and
+Slicer startup settings have not been changed.
 
-Current official nnU-Net provides native pretrained CNN and Primus trainers;
-installing all of nnssl is not a general prerequisite. Use the exact compatible
-implementation for the selected export, then verify native restoration and
-prediction before claiming support. Do not blindly install latest or replace
-the legacy implementation with a differently named current trainer. There is
-currently **no tested Slicer runtime installation recipe for these two exports**.
-The target colleague environment and a compatible runtime must be confirmed before
-deployment. [nnFoundation](https://github.com/MIC-DKFZ/nnssl),
+Current official nnU-Net provides native pretrained CNN and Primus trainers.
+Use the verified implementation for the selected export and preserve its original
+trainer identity. [nnFoundation](https://github.com/MIC-DKFZ/nnssl),
 [official adaptation guide](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/finetuning_from_nnssl_checkpoints.md),
 [inference guide](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how-to/run-inference.md).
 
