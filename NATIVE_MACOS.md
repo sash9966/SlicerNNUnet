@@ -54,12 +54,15 @@ os.environ["nnUNet_extTrainer"] = os.pathsep.join([
     "/path/to/ViT/ExistingTrainer__ExistingPlans__3d_fullres",
 ])
 os.environ["nnUNet_compile"] = "false"
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 ```
 
 Use the ordinary run directories containing each export's unchanged original
 `paper150_trainers.py` and `paper_trainers.py`. Official `nnUNet_extTrainer`
 discovery imports those existing classes; the checkpoint selects the actual
 trainer. Both supplied exports contain byte-identical copies of these sources.
+Disabling bytecode writes keeps imports from adding `__pycache__` files to the
+original model export directories.
 
 The explicit standard `nnUNetv2_predict` script in the tested installation uses
 Slicer's `python-real` interpreter and inherits this source-first environment.
