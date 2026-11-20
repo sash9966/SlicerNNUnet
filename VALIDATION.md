@@ -2,7 +2,8 @@
 
 Upstream: KitwareMedical/SlicerNNUnet
 `45557d4a6688e9802ea3ba8abba46dce91a9e430`.
-Local feature branch: `feature/nnfoundation-support`. No GitHub fork or push.
+Feature branch: [`feature/nnfoundation-support`](https://github.com/sash9966/SlicerNNUnet/tree/feature/nnfoundation-support)
+in the personal fork `sash9966/SlicerNNUnet`.
 
 This change affects inference configuration, saved UI preferences and result
 handling. No training method, cohort, checkpoint, source export or plans were
@@ -168,17 +169,18 @@ suite = unittest.defaultTestLoader.loadTestsFromName("Testing.ModelParityTestCas
 unittest.TextTestRunner(verbosity=2).run(suite)
 ```
 
-## Publish only when authorized
+## GitHub source handoff
 
-The local checkout keeps the official repository as `upstream`; no user fork
-remote exists. When remote operations are enabled explicitly:
+The personal fork is [`sash9966/SlicerNNUnet`](https://github.com/sash9966/SlicerNNUnet).
+Use the `feature/nnfoundation-support` branch for these changes; the default
+`main` branch retains the upstream source. The working checkout keeps the
+official repository as `upstream` and the personal fork as `origin`.
 
 ```bash
-gh repo fork KitwareMedical/SlicerNNUnet --remote=false
-git remote add origin https://github.com/YOUR_GITHUB_OWNER/SlicerNNUnet.git
-git remote -v
-git push -u origin feature/nnfoundation-support
+git clone --branch feature/nnfoundation-support https://github.com/sash9966/SlicerNNUnet.git
 ```
 
-Do not force-push or load both the fork and original extension in one Slicer
-installation. No release/catalogue publication is performed by these commands.
+Follow [README.md](README.md) for source-module loading and
+[NATIVE_MACOS.md](NATIVE_MACOS.md) for the tested macOS runtime. Weights and
+private validation records are supplied separately. This handoff does not
+publish an extension release or submit it to the Slicer extension catalogue.

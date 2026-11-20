@@ -43,13 +43,27 @@ method for deep learning-based biomedical image segmentation. Nature methods, 18
 
 ## Using the extension
 
-The original extension can be installed using Slicer's extension manager. This local
-development fork retains the original extension/module names and replaces it in a
-Slicer installation. Disable or uninstall the original **SlicerNNUnet** first;
-do not load both copies. Build/package this checkout with the Slicer extension
-build tools, or for local development add this checkout's `SlicerNNUnet` directory
-to **Edit → Application Settings → Modules → Additional module paths**, then restart.
-No fork, release or extension-catalogue submission is published by this checkout.
+The nnFoundation changes are on
+[`sash9966/SlicerNNUnet`, branch `feature/nnfoundation-support`](https://github.com/sash9966/SlicerNNUnet/tree/feature/nnfoundation-support).
+Clone that branch explicitly:
+
+```bash
+git clone --branch feature/nnfoundation-support https://github.com/sash9966/SlicerNNUnet.git
+```
+
+This development fork retains the original extension/module names and replaces
+it in a Slicer installation. Disable or uninstall the original **NNUNet**
+extension first; do not load both copies. For local development add the clone's
+`SlicerNNUnet` subfolder to **Application Settings → Modules → Additional module
+paths**, then restart. Open **Segmentation → nnUNet**.
+
+For the tested macOS CNN/ViT setup, follow [NATIVE_MACOS.md](NATIVE_MACOS.md),
+including its Python-console environment block after each Slicer startup.
+Cloning the extension alone does not configure that runtime. Model weights are
+supplied separately as their unchanged fine-tuned nnU-Net model folders.
+
+A built extension package and extension-catalogue installation have not been
+validated; see [VALIDATION.md](VALIDATION.md) for the source-loaded checks.
 
 Once installed, navigate to `Segmentation>nnUNet` in the modules drop down menu or search directly
 for `nnUnet`.
